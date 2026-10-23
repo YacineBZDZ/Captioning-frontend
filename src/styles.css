@@ -319,6 +319,16 @@ code {
 .status-fail {
   color: var(--error);
 }
+@media (max-width: 599px) {
+  .status,
+  .status-note {
+    justify-items: start;
+    text-align: left;
+  }
+  .status-line {
+    justify-content: flex-start;
+  }
+}
 
 .pill {
   --c: var(--idle);

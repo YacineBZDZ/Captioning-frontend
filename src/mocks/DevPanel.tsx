@@ -7,7 +7,11 @@ export function DevPanel({ backend }: { backend: MockBackend }) {
   const id = useId();
   return (
     <aside className="devpanel" aria-label="Mock backend controls">
-      <details open>
+      <details
+        open={
+          typeof window.matchMedia !== 'function' || window.matchMedia('(min-width: 700px)').matches
+        }
+      >
         <summary>Mock backend</summary>
         <label htmlFor={id}>Scenario</label>
         <select
