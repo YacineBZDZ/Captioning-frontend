@@ -90,7 +90,11 @@ export function runReducer(state: RunState, action: RunAction): RunState {
       return {
         ...state,
         phase: 'error',
-        error: { ...action.error, step, requestId: action.error.requestId ?? state.started?.request_id },
+        error: {
+          ...action.error,
+          step,
+          requestId: action.error.requestId ?? state.started?.request_id,
+        },
         steps: settle(state.steps, step, true),
       };
     }
@@ -120,7 +124,12 @@ function applyEvent(state: RunState, event: StreamEvent): RunState {
     }
 
     case 'result':
-      return { ...state, phase: 'success', result: event, steps: settle(state.steps, undefined, false) };
+      return {
+        ...state,
+        phase: 'success',
+        result: event,
+        steps: settle(state.steps, undefined, false),
+      };
 
     case 'error': {
       const { event: _ignored, ...body } = event;

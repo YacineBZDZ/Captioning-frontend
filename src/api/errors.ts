@@ -1,3 +1,4 @@
+import { pct } from '../format';
 import type { ErrorCode, StepId } from './types';
 
 /** An error as the UI sees it, whatever its origin (stream, HTTP body, client). */
@@ -40,10 +41,6 @@ interface Entry {
 
 export function formatTypes(types: string[]): string {
   return types.map((t) => t.replace(/^image\//, '').toUpperCase()).join(', ');
-}
-
-export function pct(value: number): string {
-  return `${Math.round(value * 100)} %`;
 }
 
 function article(word: string): string {

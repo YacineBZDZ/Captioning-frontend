@@ -54,7 +54,8 @@ export async function checkHealth(
       cache: 'no-store',
     });
     const body = (await readJson(res)) as Partial<HealthBody> | undefined;
-    if (res.status === 200 && body?.status === 'ok') return { kind: 'ok', body: body as HealthBody };
+    if (res.status === 200 && body?.status === 'ok')
+      return { kind: 'ok', body: body as HealthBody };
     if (res.status === 503 && body?.status === 'loading')
       return { kind: 'loading', body: body as HealthBody };
     return { kind: 'fail', reason: `unexpected response (HTTP ${res.status})` };
@@ -130,9 +131,7 @@ export interface ProcessOptions {
 }
 
 export type ProcessOutcome =
-  | { type: 'terminal' }
-  | { type: 'cancelled' }
-  | { type: 'failed'; error: AppError };
+  { type: 'terminal' } | { type: 'cancelled' } | { type: 'failed'; error: AppError };
 
 export const IDLE_TIMEOUT_MS = 60_000;
 
@@ -207,12 +206,19 @@ export async function processImage(params: {
       }
       return {
         type: 'failed',
-        error: { code: 'HTTP_ERROR', httpStatus: response.status, requestId: requestId ?? undefined },
+        error: {
+          code: 'HTTP_ERROR',
+          httpStatus: response.status,
+          requestId: requestId ?? undefined,
+        },
       };
     }
 
     if (!response.body) {
-      return { type: 'failed', error: { code: 'CONNECTION_LOST', requestId: requestId ?? undefined } };
+      return {
+        type: 'failed',
+        error: { code: 'CONNECTION_LOST', requestId: requestId ?? undefined },
+      };
     }
 
     try {

@@ -182,7 +182,12 @@ function buildScript(scenario: ScenarioId, c: RunContext): ScriptItem[] {
   });
   const denoising = (needed: boolean): ScriptItem[] => {
     if (c.denoise === 'never')
-      return step('denoising', [100, 100], { applied: false, reason: 'disabled_by_request' }, 'skipped');
+      return step(
+        'denoising',
+        [100, 100],
+        { applied: false, reason: 'disabled_by_request' },
+        'skipped',
+      );
     if (needed || c.denoise === 'always') return step('denoising', [900, 1500], denoisedData());
     return step('denoising', [100, 100], { applied: false, reason: 'clean' }, 'skipped');
   };
@@ -207,11 +212,21 @@ function buildScript(scenario: ScenarioId, c: RunContext): ScriptItem[] {
       classification: cls,
       quality: q,
       denoising: { applied: denoised },
-      timings_ms: { validation: 150, classification: 300, quality: 150, denoising: denoised ? 1200 : 0, captioning: 1050 },
+      timings_ms: {
+        validation: 150,
+        classification: 300,
+        quality: 150,
+        ...(denoised ? { denoising: 1200 } : {}),
+        captioning: 1050,
+      },
       total_ms: denoised ? 2850 : 1650,
     },
   });
-  const notAPhoto = (cls: ClassificationData, stepName: StepId, rechecked: boolean): ScriptItem => ({
+  const notAPhoto = (
+    cls: ClassificationData,
+    stepName: StepId,
+    rechecked: boolean,
+  ): ScriptItem => ({
     wait: [50, 100],
     line: {
       event: 'error',
@@ -443,7 +458,8 @@ export function createMockBackend(options: MockBackendOptions = {}): MockBackend
       ...size,
       denoised: await fakeDenoised(file),
       decoding: form?.get('decoding') === 'greedy' ? 'greedy' : 'beam',
-      denoise: (['auto', 'always', 'never'] as const).find((m) => m === form?.get('denoise')) ?? 'auto',
+      denoise:
+        (['auto', 'always', 'never'] as const).find((m) => m === form?.get('denoise')) ?? 'auto',
     };
     const script = buildScript(scenario, ctx);
     const encoder = new TextEncoder();
