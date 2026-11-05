@@ -394,3 +394,29 @@ describe('batchReducer groups, failures and cancel', () => {
     expect(s.items.map((i) => i.caption)).toEqual(['caption 0', 'zero', 'one']);
   });
 });
+
+describe('stageCounts', () => {
+  it('counts a "not a photo" image as having gone through classification', () => {
+    const s = apply(
+      started(2),
+      { type: 'groupStart', group: 0 },
+      ev(0, batchStarted(2)),
+      ev(0, {
+        event: 'item_step',
+        index: 0,
+        step: 'classification',
+        status: 'done',
+        data: painting,
+      }),
+      ev(0, { event: 'item_step', index: 1, step: 'classification', status: 'done', data: photo }),
+      ev(0, {
+        event: 'item_done',
+        index: 0,
+        status: 'error',
+        error: { code: 'NOT_A_PHOTO', step: 'classification', details: { ...painting } },
+      }),
+    );
+    expect(s.items[0]!.run.steps.classification.status).toBe('error');
+    expect(stageCounts(s)).toMatchObject({ upload: 2, classification: 2, captioning: 0 });
+  });
+});

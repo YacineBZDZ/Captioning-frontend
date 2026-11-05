@@ -57,3 +57,25 @@ export function capSelection<T>(
   const room = Math.max(0, cap - existing);
   return { accepted: incoming.slice(0, room), dropped: Math.max(0, incoming.length - room) };
 }
+
+/**
+ * Limits for "Retry with smaller groups" after TOO_MANY_FILES or
+ * BATCH_TOO_LARGE: the tightest of the re-read /v1/info limits and the
+ * limits named in the error details. If that is still not smaller than the
+ * group that failed, the group size is halved.
+ */
+export function smallerLimits(
+  fresh: SplitLimits,
+  details: Record<string, unknown> | undefined,
+  failedGroup: { count: number; bytes: number },
+): SplitLimits {
+  let maxImages = fresh.maxImages;
+  let maxTotalBytes = fresh.maxTotalBytes;
+  if (typeof details?.max_images === 'number' && details.max_images > 0)
+    maxImages = Math.min(maxImages, Math.floor(details.max_images));
+  if (typeof details?.max_total_mb === 'number' && details.max_total_mb > 0)
+    maxTotalBytes = Math.min(maxTotalBytes, details.max_total_mb * 1024 * 1024);
+  const fits = failedGroup.count <= maxImages && failedGroup.bytes <= maxTotalBytes;
+  if (fits) maxImages = Math.min(maxImages, Math.ceil(failedGroup.count / 2));
+  return { maxImages: Math.max(1, maxImages), maxTotalBytes };
+}

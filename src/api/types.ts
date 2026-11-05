@@ -332,7 +332,9 @@ export function isBatchStreamEvent(value: unknown): value is BatchStreamEvent {
   if (!isObject(value)) return false;
   switch (value.event) {
     case 'batch_started':
-      return Array.isArray(value.items) && value.items.every((i) => isObject(i) && isIndex(i.index));
+      return (
+        Array.isArray(value.items) && value.items.every((i) => isObject(i) && isIndex(i.index))
+      );
     case 'stage':
       return isStageId(value.stage) && (value.status === 'running' || value.status === 'done');
     case 'item_step':

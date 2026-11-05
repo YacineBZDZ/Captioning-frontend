@@ -482,7 +482,11 @@ export function itemStatus(item: BatchItem, state: BatchState): ItemStatus {
 export type StripStage = 'upload' | StageId;
 export const STRIP_STAGES: StripStage[] = ['upload', ...STAGE_IDS];
 
-/** Images that passed each stage (done or skipped). */
+/**
+ * Images that went through each stage: done or skipped, or marked as the
+ * failing step with its data (a "not a photo" verdict still passed the
+ * classifier).
+ */
 export function stageCounts(state: BatchState): Record<StripStage, number> {
   const counts = { upload: 0 } as Record<StripStage, number>;
   for (const s of STAGE_IDS) counts[s] = 0;
@@ -490,7 +494,9 @@ export function stageCounts(state: BatchState): Record<StripStage, number> {
     const steps = item.run.steps;
     if (steps.validation.status === 'done') counts.upload++;
     for (const s of STAGE_IDS) {
-      if (steps[s].status === 'done' || steps[s].status === 'skipped') counts[s]++;
+      const step = steps[s];
+      if (step.status === 'done' || step.status === 'skipped') counts[s]++;
+      else if (step.status === 'error' && step.data !== undefined) counts[s]++;
     }
   }
   return counts;

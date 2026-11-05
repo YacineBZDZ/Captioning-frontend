@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { capSelection, HARD_CAP, splitIntoGroups, splitLimits } from './batchSplit';
+import { capSelection, HARD_CAP, smallerLimits, splitIntoGroups, splitLimits } from './batchSplit';
 
 const MB = 1024 * 1024;
 const files = (sizesMb: number[]) => sizesMb.map((mb, i) => ({ id: i, size: mb * MB }));
@@ -58,5 +58,29 @@ describe('capSelection (200 images)', () => {
 
   it('accepts nothing once the selection is full', () => {
     expect(capSelection(200, [1])).toEqual({ accepted: [], dropped: 1 });
+  });
+});
+
+describe('smallerLimits', () => {
+  const fresh = splitLimits({ maxImages: 20, maxTotalMb: 60 });
+
+  it('uses the limits named in the error details', () => {
+    expect(smallerLimits(fresh, { max_images: 5, received: 8 }, { count: 8, bytes: MB })).toEqual({
+      maxImages: 5,
+      maxTotalBytes: 60 * MB,
+    });
+    expect(
+      smallerLimits(fresh, { max_total_mb: 30 }, { count: 10, bytes: 50 * MB }).maxTotalBytes,
+    ).toBe(30 * MB);
+  });
+
+  it('uses the re-read /v1/info limits when they are smaller', () => {
+    const reread = splitLimits({ maxImages: 4, maxTotalMb: 60 });
+    expect(smallerLimits(reread, undefined, { count: 8, bytes: MB }).maxImages).toBe(4);
+  });
+
+  it('halves the group when nothing says what the real limit is', () => {
+    expect(smallerLimits(fresh, undefined, { count: 8, bytes: MB }).maxImages).toBe(4);
+    expect(smallerLimits(fresh, undefined, { count: 1, bytes: MB }).maxImages).toBe(1);
   });
 });
