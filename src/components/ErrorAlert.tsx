@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import type { ServerInfo } from '../api/client';
 import { describeError, type AppError } from '../api/errors';
+import { useCountdown } from '../hooks/useCountdown';
 import { ProbabilityBars } from './ProbabilityBars';
 
 interface Props {
@@ -8,22 +9,6 @@ interface Props {
   info: ServerInfo;
   onChooseAnother: () => void;
   onRetry: () => void;
-}
-
-function useCountdown(seconds: number | undefined, key: unknown) {
-  const [left, setLeft] = useState(seconds ?? 0);
-  useEffect(() => {
-    setLeft(seconds ?? 0);
-    if (!seconds) return;
-    const started = Date.now();
-    const id = setInterval(() => {
-      const remaining = Math.max(0, seconds - Math.floor((Date.now() - started) / 1000));
-      setLeft(remaining);
-      if (remaining === 0) clearInterval(id);
-    }, 250);
-    return () => clearInterval(id);
-  }, [seconds, key]);
-  return left;
 }
 
 export function ErrorAlert({ error, info, onChooseAnother, onRetry }: Props) {
