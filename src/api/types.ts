@@ -41,6 +41,15 @@ export interface InfoBody {
   };
   models: { classifier: string; denoiser: string; captioner: string };
   defaults: { denoise: DenoiseMode; decoding: DecodingMode };
+  /** v1.1: present only on servers that support POST /v1/batch. */
+  batch?: BatchInfoBody;
+}
+
+export interface BatchInfoBody {
+  max_images: number;
+  max_total_mb: number;
+  micro_batch_size?: number;
+  max_seconds?: number;
 }
 
 // ---- Step data -----------------------------------------------------------
@@ -152,7 +161,11 @@ export type ServerErrorCode =
   | 'SERVER_BUSY'
   | 'MODEL_NOT_READY'
   | 'NOT_A_PHOTO'
-  | 'INTERNAL_ERROR';
+  | 'INTERNAL_ERROR'
+  // v1.1 (batch)
+  | 'TOO_MANY_FILES'
+  | 'BATCH_TOO_LARGE'
+  | 'BATCH_TIMEOUT';
 
 export type ClientErrorCode = 'CONNECTION_LOST' | 'TIMEOUT' | 'SERVER_OFFLINE' | 'HTTP_ERROR';
 
@@ -192,6 +205,150 @@ export function isStreamEvent(value: unknown): value is StreamEvent {
       return typeof v.caption === 'string';
     case 'error':
       return typeof v.code === 'string';
+    default:
+      return false;
+  }
+}
+
+// ---- v1.1: POST /v1/batch stream events -------------------------------------
+
+/** Batch stages: the v1 step names except validation (done before batch_started). */
+export const STAGE_IDS = [
+  'classification',
+  'quality',
+  'denoising',
+  'reclassification',
+  'captioning',
+] as const;
+export type StageId = (typeof STAGE_IDS)[number];
+
+export interface BatchStartedItem {
+  index: number;
+  filename: string;
+  bytes: number;
+  width?: number;
+  height?: number;
+  format?: string;
+  status: 'accepted' | 'rejected';
+  error?: ErrorBody;
+}
+
+export interface BatchStartedEvent {
+  event: 'batch_started';
+  request_id: string;
+  count: number;
+  items: BatchStartedItem[];
+}
+
+export interface StageEvent {
+  event: 'stage';
+  stage: StageId;
+  status: 'running' | 'done';
+  count?: number;
+  elapsed_ms?: number;
+}
+
+export type ItemStepEvent = {
+  [K in StepId]: {
+    event: 'item_step';
+    index: number;
+    step: K;
+    status: 'running' | 'done' | 'skipped';
+    data?: StepDataMap[K];
+  };
+}[StepId];
+
+export interface BatchItemOk {
+  index: number;
+  filename?: string;
+  status: 'ok';
+  caption: string;
+  classification?: ClassificationData;
+  quality?: QualityData;
+  denoising?: { applied: boolean };
+}
+
+export interface BatchItemError {
+  index: number;
+  filename?: string;
+  status: 'error';
+  error: ErrorBody;
+}
+
+export type BatchItemResult = BatchItemOk | BatchItemError;
+
+export type ItemDoneEvent = { event: 'item_done' } & BatchItemResult;
+
+export interface HeartbeatEvent {
+  event: 'heartbeat';
+  t?: number;
+}
+
+export interface BatchResultEvent {
+  event: 'batch_result';
+  request_id?: string;
+  count?: number;
+  succeeded?: number;
+  failed?: number;
+  timings_ms?: Partial<Record<StageId, number>>;
+  total_ms?: number;
+  items: BatchItemResult[];
+}
+
+export type BatchStreamEvent =
+  | BatchStartedEvent
+  | StageEvent
+  | ItemStepEvent
+  | ItemDoneEvent
+  | HeartbeatEvent
+  | BatchResultEvent
+  | ErrorEvent;
+
+function isObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null;
+}
+
+function isIndex(v: unknown): v is number {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 0;
+}
+
+export function isStageId(value: unknown): value is StageId {
+  return typeof value === 'string' && (STAGE_IDS as readonly string[]).includes(value);
+}
+
+function isItemResult(v: unknown): v is BatchItemResult {
+  if (!isObject(v) || !isIndex(v.index)) return false;
+  if (v.status === 'ok') return typeof v.caption === 'string';
+  if (v.status === 'error') return isObject(v.error) && typeof v.error.code === 'string';
+  return false;
+}
+
+/**
+ * Structural check for batch stream lines. Unknown `event` values (and
+ * malformed known ones) return false so callers can ignore them; unknown
+ * fields are simply carried along.
+ */
+export function isBatchStreamEvent(value: unknown): value is BatchStreamEvent {
+  if (!isObject(value)) return false;
+  switch (value.event) {
+    case 'batch_started':
+      return Array.isArray(value.items) && value.items.every((i) => isObject(i) && isIndex(i.index));
+    case 'stage':
+      return isStageId(value.stage) && (value.status === 'running' || value.status === 'done');
+    case 'item_step':
+      return (
+        isIndex(value.index) &&
+        isStepId(value.step) &&
+        (value.status === 'running' || value.status === 'done' || value.status === 'skipped')
+      );
+    case 'item_done':
+      return isItemResult(value);
+    case 'heartbeat':
+      return true;
+    case 'batch_result':
+      return Array.isArray(value.items) && value.items.every(isItemResult);
+    case 'error':
+      return typeof value.code === 'string';
     default:
       return false;
   }

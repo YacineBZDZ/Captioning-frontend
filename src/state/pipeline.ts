@@ -20,12 +20,19 @@ export type Steps = { [K in StepId]: StepState<K> };
 
 export type RunPhase = 'idle' | 'running' | 'success' | 'error' | 'cancelled';
 
-export interface RunState {
+/**
+ * The per-image state both views render: the single-image run and every item
+ * of a batch. The timeline and its step details only read this shape.
+ */
+export interface ImageRun {
   phase: RunPhase;
-  started?: StartedEvent;
   steps: Steps;
-  result?: ResultEvent;
   error?: AppError;
+}
+
+export interface RunState extends ImageRun {
+  started?: StartedEvent;
+  result?: ResultEvent;
   /** Wall-clock start of the run, for the client-side total when the server sends none. */
   startedAt?: number;
 }
@@ -39,7 +46,7 @@ export type RunAction =
   | { type: 'streamEnded' }
   | { type: 'reset' };
 
-function emptySteps(): Steps {
+export function emptySteps(): Steps {
   const steps = {} as Record<StepId, StepState>;
   for (const id of STEP_IDS) steps[id] = { status: 'pending' };
   return steps as Steps;
@@ -48,7 +55,7 @@ function emptySteps(): Steps {
 export const initialRunState: RunState = { phase: 'idle', steps: emptySteps() };
 
 /** Closes the timeline: unfinished steps become "not needed", or "error" for the failed one. */
-function settle(steps: Steps, failedStep: StepId | undefined, failed: boolean): Steps {
+export function settle(steps: Steps, failedStep: StepId | undefined, failed: boolean): Steps {
   const next = { ...steps } as Record<StepId, StepState>;
   for (const id of STEP_IDS) {
     const s = next[id];
@@ -64,8 +71,24 @@ function settle(steps: Steps, failedStep: StepId | undefined, failed: boolean): 
   return next as Steps;
 }
 
-function runningStep(steps: Steps): StepId | undefined {
+export function runningStep(steps: Steps): StepId | undefined {
   return STEP_IDS.find((id) => steps[id].status === 'running');
+}
+
+/** Records one step update (running, or done/skipped with its data). */
+export function withStep(
+  steps: Steps,
+  step: StepId,
+  status: 'running' | 'done' | 'skipped',
+  data?: unknown,
+  elapsedMs?: number,
+): Steps {
+  const prev = steps[step];
+  const next: StepState =
+    status === 'running'
+      ? { status: 'running' }
+      : { status, elapsedMs, data: (data ?? prev.data) as StepState['data'] };
+  return { ...steps, [step]: next } as Steps;
 }
 
 function isTerminal(phase: RunPhase): boolean {
@@ -114,14 +137,14 @@ function applyEvent(state: RunState, event: StreamEvent): RunState {
     case 'started':
       return { ...state, started: event };
 
-    case 'step': {
-      const prev = state.steps[event.step];
-      const next: StepState =
-        event.status === 'running'
-          ? { status: 'running' }
-          : { status: event.status, elapsedMs: event.elapsed_ms, data: event.data ?? prev.data };
-      return { ...state, steps: { ...state.steps, [event.step]: next } };
-    }
+    case 'step':
+      return {
+        ...state,
+        steps:
+          event.status === 'running'
+            ? withStep(state.steps, event.step, 'running')
+            : withStep(state.steps, event.step, event.status, event.data, event.elapsed_ms),
+      };
 
     case 'result':
       return {
@@ -159,7 +182,7 @@ export function finalClassification(state: RunState) {
   );
 }
 
-export function denoisedImage(state: RunState): string | undefined {
+export function denoisedImage(state: ImageRun): string | undefined {
   const d = state.steps.denoising.data;
   return d && d.applied ? d.image : undefined;
 }

@@ -18,6 +18,7 @@ export type SuggestedAction =
   | 'retry' // send the same file again
   | 'retry_after' // retry, but only after a delay
   | 'wait_for_server' // retried automatically once the server is online
+  | 'retry_smaller' // batch only: re-read the limits and retry with smaller groups
   | 'none';
 
 export interface ErrorDescription {
@@ -129,7 +130,8 @@ const ENTRIES: Record<ErrorCode, Entry> = {
   },
   TIMEOUT: {
     title: 'The server took too long',
-    message: () => 'No progress was received for 60 seconds, so the request was cancelled.',
+    message: (err) =>
+      `No progress was received for ${typeof err.details?.timeout_s === 'number' ? err.details.timeout_s : 60} seconds, so the request was cancelled.`,
     action: 'retry',
     actionLabel: 'Retry',
   },
@@ -137,6 +139,30 @@ const ENTRIES: Record<ErrorCode, Entry> = {
     title: 'The server could not be reached',
     message: () =>
       'It may be asleep or restarting. Free servers sleep after a period of inactivity; use "Wake up server" in the header.',
+    action: 'retry',
+    actionLabel: 'Retry',
+  },
+  TOO_MANY_FILES: {
+    title: 'Too many images in one request',
+    message: (err) =>
+      typeof err.details?.max_images === 'number'
+        ? `The server accepts at most ${err.details.max_images} images per request.`
+        : 'The server refused the number of images sent at once.',
+    action: 'retry_smaller',
+    actionLabel: 'Retry with smaller groups',
+  },
+  BATCH_TOO_LARGE: {
+    title: 'These images are too large together',
+    message: (err) =>
+      typeof err.details?.max_total_mb === 'number'
+        ? `The server accepts at most ${err.details.max_total_mb} MB per request.`
+        : 'The server refused the total size of the images sent at once.',
+    action: 'retry_smaller',
+    actionLabel: 'Retry with smaller groups',
+  },
+  BATCH_TIMEOUT: {
+    title: 'Ran out of time',
+    message: () => 'The server ran out of time for this image. Retry it.',
     action: 'retry',
     actionLabel: 'Retry',
   },

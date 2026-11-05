@@ -2,6 +2,7 @@ import { fromErrorBody, type AppError } from './errors';
 import { readNdjson } from './ndjson';
 import {
   isStreamEvent,
+  type BatchInfoBody,
   type DecodingMode,
   type DenoiseMode,
   type HealthBody,
@@ -29,7 +30,7 @@ export type HealthResult =
 
 export const HEALTH_TIMEOUT_MS = 5000;
 
-async function readJson(res: Response): Promise<unknown> {
+export async function readJson(res: Response): Promise<unknown> {
   const text = await res.text();
   try {
     return JSON.parse(text) as unknown;
@@ -79,6 +80,13 @@ export interface ServerInfo {
   calibrated: boolean | null;
   models: { classifier: string; denoiser: string; captioner: string };
   version: string | null;
+  /** v1.1 batch limits; null when the server does not support POST /v1/batch. */
+  batch: BatchLimits | null;
+}
+
+export interface BatchLimits {
+  maxImages: number;
+  maxTotalMb: number;
 }
 
 export const DEFAULT_INFO: ServerInfo = {
@@ -89,7 +97,16 @@ export const DEFAULT_INFO: ServerInfo = {
   calibrated: null,
   models: { classifier: 'MobileNetV2', denoiser: 'unet_mixed', captioner: 'InceptionV3 + GRU' },
   version: null,
+  batch: null,
 };
+
+function normaliseBatch(raw: unknown): BatchLimits | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const b = raw as Partial<BatchInfoBody>;
+  const ok = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n > 0;
+  if (!ok(b.max_images) || !ok(b.max_total_mb)) return null;
+  return { maxImages: Math.floor(b.max_images), maxTotalMb: b.max_total_mb };
+}
 
 export function normaliseInfo(raw: unknown): ServerInfo {
   if (typeof raw !== 'object' || raw === null) return DEFAULT_INFO;
@@ -110,6 +127,7 @@ export function normaliseInfo(raw: unknown): ServerInfo {
     calibrated: typeof r.quality?.calibrated === 'boolean' ? r.quality.calibrated : null,
     models: { ...DEFAULT_INFO.models, ...(r.models ?? {}) },
     version: typeof r.version === 'string' ? r.version : null,
+    batch: normaliseBatch(r.batch),
   };
 }
 

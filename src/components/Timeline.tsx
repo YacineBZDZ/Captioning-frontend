@@ -9,12 +9,12 @@ import {
 } from '../api/types';
 import { formatMs } from '../format';
 import { isProvisionalNonPhoto, STATUS_LABEL, STEP_META, stepSummary } from '../state/describe';
-import type { RunState, StepState } from '../state/pipeline';
+import type { ImageRun, StepState } from '../state/pipeline';
 import { BeforeAfter } from './BeforeAfter';
 import { ProbabilityBars } from './ProbabilityBars';
 
 interface Props {
-  run: RunState;
+  run: ImageRun;
   info: ServerInfo;
   originalUrl?: string;
   originalAspect?: number;
