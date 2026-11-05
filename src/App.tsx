@@ -143,34 +143,40 @@ export default function App({ api, devPanel }: Props) {
   const singleRunning = run.phase === 'running';
   const batchRunning = batch.state.phase === 'running';
   const running = singleRunning || batchRunning;
+  const { start: startBatchRun, retry: retryBatchRun, reset: resetBatch } = batch;
+
+  // A new run of either kind replaces the previous results (and frees their images).
   const runWith = useCallback(
     (sel: SelectedFile) => {
       setView('single');
+      resetBatch();
       setRunImage(sel);
       setAutoRetry(false);
       void start(sel.file, options);
     },
-    [start, options],
+    [start, options, resetBatch],
   );
 
   const startBatch = useCallback(() => {
     setView('batch');
+    reset();
+    setRunImage(null);
     setLimitsOverride(null);
     setBatchAutoRetry(false);
     const base = info.batch ? splitLimits(info.batch) : limits;
-    void batch.start(
+    void startBatchRun(
       files.map((f) => ({ id: f.id, file: f.file, url: f.url })),
       options,
       base,
     );
-  }, [batch, files, info.batch, limits, options]);
+  }, [startBatchRun, reset, files, info.batch, limits, options]);
 
   const retryBatch = useCallback(
     (override?: SplitLimits) => {
       setBatchAutoRetry(false);
-      void batch.retry(options, override ?? limits);
+      void retryBatchRun(options, override ?? limits);
     },
-    [batch, options, limits],
+    [retryBatchRun, options, limits],
   );
 
   const retrySmaller = useCallback(async () => {
