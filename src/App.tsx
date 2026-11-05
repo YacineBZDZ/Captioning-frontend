@@ -1,15 +1,21 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { ApiClient, ProcessOptions } from './api/client';
 import { STEP_IDS, type StepId } from './api/types';
+import { BatchView } from './components/batch/BatchView';
 import { ErrorAlert } from './components/ErrorAlert';
 import { HowItWorks } from './components/HowItWorks';
 import { ResultCard } from './components/ResultCard';
 import { StatusIndicator } from './components/StatusIndicator';
 import { Timeline } from './components/Timeline';
-import { UploadPanel, type Selection } from './components/UploadPanel';
+import { UploadPanel } from './components/UploadPanel';
 import { useAnnouncer } from './hooks/useAnnouncer';
+import { useBatchRun } from './hooks/useBatchRun';
 import { usePipeline } from './hooks/usePipeline';
 import { useServerStatus } from './hooks/useServerStatus';
+import { useThrottledAnnounce } from './hooks/useThrottledAnnounce';
+import { toSelected, type SelectedFile } from './selection';
+import { isRetryable, type BatchState } from './state/batch';
+import { smallerLimits, splitIntoGroups, splitLimits, type SplitLimits } from './state/batchSplit';
 import { STEP_META, stepSummary } from './state/describe';
 import type { ServerStatus } from './state/health';
 import { denoisedImage, type RunState } from './state/pipeline';
@@ -27,12 +33,26 @@ const STATUS_ANNOUNCEMENT: Record<ServerStatus, string> = {
   offline: 'Server is offline or asleep.',
 };
 
-function analyseBlocker(status: ServerStatus, hasFile: boolean): string | null {
+function analyseBlocker(
+  status: ServerStatus,
+  count: number,
+  batchSupported: boolean | null,
+): string | null {
   if (status === 'checking') return 'Checking whether the server is available…';
   if (status === 'starting') return 'The server is starting: models are loading. Please wait.';
   if (status === 'offline') return 'The server is offline or asleep. Use “Wake up server” above.';
-  if (!hasFile) return 'Choose an image first.';
+  if (count === 0) return 'Choose an image first.';
+  if (count > 1 && batchSupported === null) return 'Reading the server limits…';
+  if (count > 1 && batchSupported === false)
+    return 'This server handles one image at a time. Remove the extra images.';
   return null;
+}
+
+/** The group that failed at batch level, for "Retry with smaller groups". */
+function failedGroupSize(state: BatchState) {
+  const g = state.groups.find((x) => x.status === 'failed');
+  const items = (g?.indices ?? []).map((i) => state.items[i]!).filter(Boolean);
+  return { count: items.length, bytes: items.reduce((n, i) => n + i.bytes, 0) };
 }
 
 /** Keeps object URLs alive while they are shown, and revokes them afterwards. */
@@ -80,16 +100,34 @@ function useRunAnnouncements(run: RunState, announce: (t: string) => void) {
 export default function App({ api, devPanel }: Props) {
   const server = useServerStatus(api);
   const { state: run, start, cancel, reset } = usePipeline(api);
+  const batch = useBatchRun(api);
   const { messages, announce } = useAnnouncer();
-  const [selection, setSelection] = useState<Selection | null>(null);
-  /** The image the current/last run was made with (outlives the selection). */
-  const [runImage, setRunImage] = useState<Selection | null>(null);
+  const announceBatch = useThrottledAnnounce(announce, 2000);
+  const [files, setFiles] = useState<SelectedFile[]>([]);
+  /** The image the current/last single run was made with (outlives the selection). */
+  const [runImage, setRunImage] = useState<SelectedFile | null>(null);
+  /** Which view the pipeline panel shows: the last run started decides. */
+  const [view, setView] = useState<'single' | 'batch'>('single');
   const [options, setOptions] = useState<ProcessOptions>({ denoise: 'auto', decoding: 'beam' });
   const [autoRetry, setAutoRetry] = useState(false);
+  const [batchAutoRetry, setBatchAutoRetry] = useState(false);
+  /** Limits forced by "Retry with smaller groups", until the next new batch. */
+  const [limitsOverride, setLimitsOverride] = useState<SplitLimits | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const { status, monitor } = server;
+  const { status, monitor, info, infoReady } = server;
+  const batchSupported = infoReady ? info.batch !== null : null;
+  const limits = useMemo(
+    () =>
+      limitsOverride ??
+      (info.batch ? splitLimits(info.batch) : { maxImages: 1, maxTotalBytes: Infinity }),
+    [info.batch, limitsOverride],
+  );
 
-  useObjectUrlJanitor([selection?.url, runImage?.url]);
+  useObjectUrlJanitor([
+    ...files.map((f) => f.url),
+    runImage?.url,
+    ...batch.state.items.map((i) => i.url),
+  ]);
   useRunAnnouncements(run, announce);
 
   // Announce server status changes (not the initial "checking").
@@ -102,15 +140,46 @@ export default function App({ api, devPanel }: Props) {
     else if (STATUS_ANNOUNCEMENT[status]) announce(STATUS_ANNOUNCEMENT[status]);
   }, [status, announce]);
 
-  const running = run.phase === 'running';
+  const singleRunning = run.phase === 'running';
+  const batchRunning = batch.state.phase === 'running';
+  const running = singleRunning || batchRunning;
   const runWith = useCallback(
-    (sel: Selection) => {
+    (sel: SelectedFile) => {
+      setView('single');
       setRunImage(sel);
       setAutoRetry(false);
       void start(sel.file, options);
     },
     [start, options],
   );
+
+  const startBatch = useCallback(() => {
+    setView('batch');
+    setLimitsOverride(null);
+    setBatchAutoRetry(false);
+    const base = info.batch ? splitLimits(info.batch) : limits;
+    void batch.start(
+      files.map((f) => ({ id: f.id, file: f.file, url: f.url })),
+      options,
+      base,
+    );
+  }, [batch, files, info.batch, limits, options]);
+
+  const retryBatch = useCallback(
+    (override?: SplitLimits) => {
+      setBatchAutoRetry(false);
+      void batch.retry(options, override ?? limits);
+    },
+    [batch, options, limits],
+  );
+
+  const retrySmaller = useCallback(async () => {
+    const fresh = await server.refreshInfo();
+    const base = fresh.batch ? splitLimits(fresh.batch) : limits;
+    const next = smallerLimits(base, batch.state.error?.details, failedGroupSize(batch.state));
+    setLimitsOverride(next);
+    retryBatch(next);
+  }, [server, limits, batch.state, retryBatch]);
 
   // React to errors that involve the server state.
   const errorCode = run.error?.code;
@@ -128,11 +197,31 @@ export default function App({ api, devPanel }: Props) {
     if (autoRetry && status === 'online' && runImage && !running) runWith(runImage);
   }, [autoRetry, status, runImage, running, runWith]);
 
-  const blocker = running ? null : analyseBlocker(status, selection !== null);
-  const canAnalyse = !running && blocker === null && selection !== null;
+  // The same for a batch: only the unfinished images are sent again.
+  const batchErrorCode = batch.state.error?.code;
+  useEffect(() => {
+    if (batchErrorCode === 'MODEL_NOT_READY') {
+      monitor.markStarting();
+      setBatchAutoRetry(true);
+    } else if (batchErrorCode === 'SERVER_OFFLINE' || batchErrorCode === 'CONNECTION_LOST') {
+      monitor.checkNow();
+    }
+  }, [batchErrorCode, batch.state.error, monitor]);
+
+  useEffect(() => {
+    if (batchAutoRetry && status === 'online' && !running && batch.state.items.some(isRetryable))
+      retryBatch();
+  }, [batchAutoRetry, status, running, batch.state.items, retryBatch]);
+
+  const blocker = running ? null : analyseBlocker(status, files.length, batchSupported);
+  const canAnalyse = !running && blocker === null && files.length > 0;
+  const groupCount =
+    files.length > 1 && info.batch
+      ? splitIntoGroups(files, (f) => f.file.size, splitLimits(info.batch)).length
+      : 1;
 
   function chooseAnother() {
-    setSelection(null);
+    setFiles([]);
     // Focus the file chooser so the keyboard user lands in the right place.
     requestAnimationFrame(() => fileInputRef.current?.focus());
   }
@@ -143,7 +232,18 @@ export default function App({ api, devPanel }: Props) {
     chooseAnother();
   }
 
-  const shownImage = runImage ?? selection;
+  function processOtherImages() {
+    batch.reset();
+    setLimitsOverride(null);
+    chooseAnother();
+  }
+
+  function analyse() {
+    if (files.length === 1) runWith(files[0]!);
+    else if (files.length > 1) startBatch();
+  }
+
+  const shownImage = runImage ?? files[0];
   const aspect =
     shownImage?.width && shownImage?.height ? shownImage.width / shownImage.height : undefined;
   const fallbackTimings: Partial<Record<StepId, number>> = {};
@@ -176,61 +276,89 @@ export default function App({ api, devPanel }: Props) {
         <div className="intro">
           <h1>What is in this photo?</h1>
           <p>
-            Upload a photograph. Three small neural networks check that it is a photo, clean it if
-            it is noisy, and describe it in one English sentence. You can watch each step as it
-            runs.
+            Upload one photograph or many. Three small neural networks check that each is a photo,
+            clean it if it is noisy, and describe it in one English sentence. You can watch each
+            step as it runs.
           </p>
         </div>
 
         <UploadPanel
-          info={server.info}
-          selection={selection}
-          onSelect={(file) => setSelection({ file, url: URL.createObjectURL(file) })}
-          onClear={() => setSelection(null)}
-          onDimensions={(width, height) =>
-            setSelection((s) =>
-              s && (s.width !== width || s.height !== height) ? { ...s, width, height } : s,
+          info={info}
+          batchSupported={batchSupported}
+          files={files}
+          onAdd={(added) => setFiles((current) => [...current, ...added.map(toSelected)])}
+          onReplace={(file) => setFiles([toSelected(file)])}
+          onRemove={(id) => setFiles((current) => current.filter((f) => f.id !== id))}
+          onClearAll={() => setFiles([])}
+          onDimensions={(id, width, height) =>
+            setFiles((current) =>
+              current.map((f) =>
+                f.id === id && (f.width !== width || f.height !== height)
+                  ? { ...f, width, height }
+                  : f,
+              ),
             )
           }
+          groups={groupCount}
           options={options}
           onOptions={setOptions}
           running={running}
           canAnalyse={canAnalyse}
           reason={blocker}
-          onAnalyse={() => selection && runWith(selection)}
-          onCancel={cancel}
+          onAnalyse={analyse}
+          onCancel={batchRunning ? batch.cancel : cancel}
           fileInputRef={fileInputRef}
         />
 
         <section className="panel pipeline" aria-labelledby="pipeline-title">
           <div className="pipeline-head">
             <h2 id="pipeline-title" className="eyebrow">
-              2 · Pipeline
+              {view === 'batch' ? `2 · Results` : '2 · Pipeline'}
             </h2>
-            {run.started && (
+            {view === 'single' && run.started && (
               <p className="pipeline-meta num">
                 request <code>{run.started.request_id}</code>
               </p>
             )}
           </div>
 
-          {run.phase === 'idle' && (
+          {view === 'batch' && batch.state.phase !== 'idle' && (
+            <BatchView
+              state={batch.state}
+              info={info}
+              onCancel={batch.cancel}
+              onRetry={() => retryBatch()}
+              onRetrySmaller={() => void retrySmaller()}
+              onAnother={processOtherImages}
+              announce={announceBatch}
+            />
+          )}
+
+          {view === 'single' && run.phase === 'idle' && (
             <p className="pipeline-empty">
               The steps will appear here, live, once you press <strong>Analyse</strong>.
             </p>
           )}
-          {run.phase === 'cancelled' && <p className="pipeline-note">Analysis cancelled.</p>}
+          {view === 'batch' && batch.state.phase === 'idle' && (
+            <p className="pipeline-empty">
+              The results will appear here, live, once you press <strong>Analyse</strong>.
+            </p>
+          )}
 
-          {run.error && (
+          {view === 'single' && run.phase === 'cancelled' && (
+            <p className="pipeline-note">Analysis cancelled.</p>
+          )}
+
+          {view === 'single' && run.error && (
             <ErrorAlert
               error={run.error}
-              info={server.info}
+              info={info}
               onChooseAnother={chooseAnother}
               onRetry={() => runImage && runWith(runImage)}
             />
           )}
 
-          {run.phase === 'success' && run.result && (
+          {view === 'single' && run.phase === 'success' && run.result && (
             <ResultCard
               result={run.result}
               originalUrl={runImage?.url}
@@ -241,24 +369,19 @@ export default function App({ api, devPanel }: Props) {
             />
           )}
 
-          {run.phase !== 'idle' && (
-            <Timeline
-              run={run}
-              info={server.info}
-              originalUrl={runImage?.url}
-              originalAspect={aspect}
-            />
+          {view === 'single' && run.phase !== 'idle' && (
+            <Timeline run={run} info={info} originalUrl={runImage?.url} originalAspect={aspect} />
           )}
         </section>
 
-        <HowItWorks info={server.info} />
+        <HowItWorks info={info} />
       </main>
 
       <footer className="site-footer">
         <p>
-          <strong>Privacy.</strong> Your image is sent only to the analysis server, processed in
-          memory and not kept. This page uses no cookies, no analytics and stores nothing in your
-          browser.
+          <strong>Privacy.</strong> Your images are held in this page&rsquo;s memory only and sent
+          to the analysis server for processing, which does not keep them. This page uses no
+          cookies, no analytics and stores nothing in your browser.
         </p>
         {server.version && <p className="num">backend v{server.version}</p>}
       </footer>
