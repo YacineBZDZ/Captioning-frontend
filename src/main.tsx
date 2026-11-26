@@ -18,7 +18,7 @@ async function bootstrap() {
     ]);
     const backend = createMockBackend();
     fetchFn = backend.fetch;
-    baseUrl = 'http://localhost:7860';
+    baseUrl = 'https://caption-api.icyground-e68f5579.francecentral.azurecontainerapps.io';
     devPanel = <DevPanel backend={backend} />;
   }
 
