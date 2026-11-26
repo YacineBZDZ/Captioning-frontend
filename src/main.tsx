@@ -18,7 +18,7 @@ async function bootstrap() {
     ]);
     const backend = createMockBackend();
     fetchFn = backend.fetch;
-    baseUrl = 'http://mock.local';
+    baseUrl = 'http://localhost:7860';
     devPanel = <DevPanel backend={backend} />;
   }
 
